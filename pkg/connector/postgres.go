@@ -124,6 +124,41 @@ func (p *PostgresConnector) FetchRecords(entity string, field string, values []i
 }
 
 func (p *PostgresConnector) WriteStream(entity string, records []model.Record) error {
-	// Dummy streaming implementation for iteration 2
+	if len(records) == 0 {
+		return nil
+	}
+
+	// 1. Collect column names from the first record
+	var cols []string
+	for col := range records[0].Data {
+		cols = append(cols, col)
+	}
+
+	// 2. Build parameterized INSERT statement
+	placeholders := make([]string, len(records))
+	var args []interface{}
+	argCount := 1
+
+	for i, record := range records {
+		var rowPlaceholders []string
+		for _, col := range cols {
+			rowPlaceholders = append(rowPlaceholders, fmt.Sprintf("$%d", argCount))
+			args = append(args, record.Data[col])
+			argCount++
+		}
+		placeholders[i] = fmt.Sprintf("(%s)", strings.Join(rowPlaceholders, ","))
+	}
+
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s ON CONFLICT DO NOTHING",
+		entity,
+		strings.Join(cols, ","),
+		strings.Join(placeholders, ","),
+	)
+
+	_, err := p.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed inserting records into target entity %s: %w", entity, err)
+	}
+
 	return nil
 }
