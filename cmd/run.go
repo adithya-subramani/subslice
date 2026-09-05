@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 var verbose bool
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Execute data extraction, masking, and streaming",
+	Short: "Execute data extraction, masking, and streaming with upstream and downstream graph resolution",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		startTime := time.Now()
 
@@ -25,6 +26,7 @@ var runCmd = &cobra.Command{
 		}
 
 		fmt.Printf("[INFO] Run mode initialized using config: %s\n", cfgFile)
+		fmt.Printf("[INFO] Configured Workers: %d, Batch Size: %d\n", cfg.Options.Workers, cfg.Options.BatchSize)
 
 		// Connect to Source DB
 		sourceConn, err := connector.NewConnector(cfg.Source.Driver, cfg.Source.URL)
@@ -55,7 +57,35 @@ var runCmd = &cobra.Command{
 		transformer := transform.NewTransformer(cfg.Transformations)
 		totalReplicated := 0
 
-		// 1. Process Root Target Entity
+		// 1. Process Upstream Parent Entities First (Referential Integrity Prerequisites)
+		if len(plan.UpstreamEntities) > 0 {
+			fmt.Println("[INFO] Resolving and streaming Upstream Parent entities...")
+			for _, parentEntity := range plan.UpstreamEntities {
+				// Fetch parent records linked to root or global master data
+				parentRecords, err := sourceConn.FetchRecords(parentEntity, "id", []interface{}{"org_123", "global_master"})
+				if err != nil || len(parentRecords) == 0 {
+					// Fallback to fetch all or broad lookup criteria if needed
+					parentRecords, _ = sourceConn.FetchRecords(parentEntity, "status", []interface{}{"ACTIVE", "ENABLED"})
+				}
+
+				if len(parentRecords) == 0 {
+					continue
+				}
+
+				for i := range parentRecords {
+					transformer.TransformRecord(&parentRecords[i])
+				}
+
+				if err := targetConn.WriteStream(parentEntity, parentRecords); err != nil {
+					return fmt.Errorf("upstream parent write error for %s: %w", parentEntity, err)
+				}
+
+				fmt.Printf("[OK]   %s (Upstream parent: %d records replicated)\n", parentEntity, len(parentRecords))
+				totalReplicated += len(parentRecords)
+			}
+		}
+
+		// 2. Process Root Target Entity
 		fmt.Printf("[INFO] Extracting Root entity: %s\n", cfg.Root.Table)
 		rootRecords, err := sourceConn.FetchRecords(cfg.Root.Table, "id", []interface{}{"org_123"})
 		if err != nil {
@@ -72,30 +102,59 @@ var runCmd = &cobra.Command{
 		fmt.Printf("[OK]   %s (%d records replicated)\n", cfg.Root.Table, len(rootRecords))
 		totalReplicated += len(rootRecords)
 
-		// 2. Process Downstream Child Entities (e.g. users, orders)
-		for _, child := range plan.DownstreamEntities {
-			childRecords, err := sourceConn.FetchRecords(child, "tenant_id", []interface{}{"org_123"})
-			if err != nil {
-				// Fallback attempt for user_id on child tables like orders
-				childRecords, _ = sourceConn.FetchRecords(child, "user_id", []interface{}{"usr_1", "usr_2"})
-			}
+		// 3. Process Downstream Child Entities Concurrently using errgroup
+		var g errgroup.Group
+		sem := make(chan struct{}, cfg.Options.Workers)
 
-			for i := range childRecords {
-				transformer.TransformRecord(&childRecords[i])
-			}
+		for _, childEntity := range plan.DownstreamEntities {
+			entity := childEntity
+			g.Go(func() error {
+				sem <- struct{}{}
+				defer func() { <-sem }()
 
-			if len(childRecords) > 0 {
-				if err := targetConn.WriteStream(child, childRecords); err != nil {
-					return fmt.Errorf("write error for entity %s: %w", child, err)
+				childRecords, err := sourceConn.FetchRecords(entity, "tenant_id", []interface{}{"org_123"})
+				if err != nil || len(childRecords) == 0 {
+					childRecords, _ = sourceConn.FetchRecords(entity, "user_id", []interface{}{"usr_1", "usr_2"})
 				}
-				fmt.Printf("[OK]   %s (%d records replicated with PII transformations)\n", child, len(childRecords))
-				totalReplicated += len(childRecords)
-			}
+
+				if len(childRecords) == 0 {
+					return nil
+				}
+
+				for i := range childRecords {
+					transformer.TransformRecord(&childRecords[i])
+				}
+
+				batchSize := cfg.Options.BatchSize
+				if batchSize <= 0 {
+					batchSize = 1000
+				}
+
+				for i := 0; i < len(childRecords); i += batchSize {
+					end := i + batchSize
+					if end > len(childRecords) {
+						end = len(childRecords)
+					}
+					batch := childRecords[i:end]
+
+					if err := targetConn.WriteStream(entity, batch); err != nil {
+						return fmt.Errorf("batch write error for entity %s: %w", entity, err)
+					}
+				}
+
+				fmt.Printf("[OK]   %s (%d records replicated concurrently with batching)\n", entity, len(childRecords))
+				return nil
+			})
+		}
+
+		if err := g.Wait(); err != nil {
+			return fmt.Errorf("concurrent pipeline execution failed: %w", err)
 		}
 
 		duration := time.Since(startTime).Seconds()
+		totalTables := 1 + len(plan.UpstreamEntities) + len(plan.DownstreamEntities)
 		fmt.Printf("[SUCCESS] Replicated %d rows across %d tables in %.2fs.\n",
-			totalReplicated, 1+len(plan.DownstreamEntities), duration)
+			totalReplicated, totalTables, duration)
 		return nil
 	},
 }
