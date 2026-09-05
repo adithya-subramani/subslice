@@ -12,7 +12,7 @@ type Connector interface {
 	DiscoverGraph() (*model.StorageGraph, error)
 
 	// FetchRecords fetches matching records for an entity given field key/value pairs
-	FetchRecords(entity string, field string, values []interface{}) ([]model.Record, error)
+	FetchRecords(entity string, field string, values []interface{}, limit int) ([]model.Record, error)
 
 	// WriteStream streams batch records into the target destination
 	WriteStream(entity string, records []model.Record) error

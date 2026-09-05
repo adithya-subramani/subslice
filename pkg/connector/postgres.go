@@ -74,53 +74,39 @@ func (p *PostgresConnector) DiscoverGraph() (*model.StorageGraph, error) {
 	return graph, nil
 }
 
-func (p *PostgresConnector) FetchRecords(entity string, field string, values []interface{}) ([]model.Record, error) {
+func (p *PostgresConnector) FetchRecords(entity string, column string, values []interface{}, limit int) ([]model.Record, error) {
 	if len(values) == 0 {
-		return nil, nil
+		query := fmt.Sprintf("SELECT * FROM %s", entity)
+		if limit > 0 {
+			query += fmt.Sprintf(" LIMIT %d", limit)
+		}
+		rows, err := p.db.Query(query)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return p.scanRows(rows, entity)
 	}
 
 	placeholders := make([]string, len(values))
-	for i := range values {
+	args := make([]interface{}, len(values))
+	for i, val := range values {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = val
 	}
 
-	query := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)", entity, field, strings.Join(placeholders, ","))
-	rows, err := p.db.Query(query, values...)
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)", entity, column, strings.Join(placeholders, ","))
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := p.db.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("error querying entity %s: %w", entity, err)
+		return nil, fmt.Errorf("failed fetching records for %s: %w", entity, err)
 	}
 	defer rows.Close()
 
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-
-	var records []model.Record
-	for rows.Next() {
-		columns := make([]interface{}, len(cols))
-		columnPointers := make([]interface{}, len(cols))
-		for i := range columns {
-			columnPointers[i] = &columns[i]
-		}
-
-		if err := rows.Scan(columnPointers...); err != nil {
-			return nil, err
-		}
-
-		recordData := make(map[string]interface{})
-		for i, colName := range cols {
-			val := columnPointers[i].(*interface{})
-			recordData[colName] = *val
-		}
-
-		records = append(records, model.Record{
-			EntityName: entity,
-			Data:       recordData,
-		})
-	}
-
-	return records, nil
+	return p.scanRows(rows, entity)
 }
 
 func (p *PostgresConnector) WriteStream(entity string, records []model.Record) error {
@@ -161,4 +147,43 @@ func (p *PostgresConnector) WriteStream(entity string, records []model.Record) e
 	}
 
 	return nil
+}
+
+// scanRows converts sql.Rows into a slice of generic model.Records
+func (p *PostgresConnector) scanRows(rows *sql.Rows, entityName string) ([]model.Record, error) {
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var records []model.Record
+
+	for rows.Next() {
+		values := make([]interface{}, len(cols))
+		valuePtrs := make([]interface{}, len(cols))
+		for i := range cols {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+
+		data := make(map[string]interface{})
+		for i, col := range cols {
+			val := values[i]
+			if b, ok := val.([]byte); ok {
+				data[col] = string(b)
+			} else {
+				data[col] = val
+			}
+		}
+
+		records = append(records, model.Record{
+			EntityName: entityName,
+			Data:       data,
+		})
+	}
+
+	return records, nil
 }

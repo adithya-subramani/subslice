@@ -28,9 +28,10 @@ type TargetConfig struct {
 }
 
 type Options struct {
-	MaxDepth  int `yaml:"max_depth"`
-	BatchSize int `yaml:"batch_size"`
 	Workers   int `yaml:"workers"`
+	BatchSize int `yaml:"batch_size"`
+	MaxDepth  int `yaml:"max_depth"`
+	Limit     int `yaml:"limit"` // Global default row limit per entity for subsetting
 }
 
 type Root struct {

@@ -62,10 +62,10 @@ var runCmd = &cobra.Command{
 			fmt.Println("[INFO] Resolving and streaming Upstream Parent entities...")
 			for _, parentEntity := range plan.UpstreamEntities {
 				// Fetch parent records linked to root or global master data
-				parentRecords, err := sourceConn.FetchRecords(parentEntity, "id", []interface{}{"org_123", "global_master"})
+				parentRecords, err := sourceConn.FetchRecords(parentEntity, "id", []interface{}{"org_123", "global_master"}, cfg.Options.Limit)
 				if err != nil || len(parentRecords) == 0 {
 					// Fallback to fetch all or broad lookup criteria if needed
-					parentRecords, _ = sourceConn.FetchRecords(parentEntity, "status", []interface{}{"ACTIVE", "ENABLED"})
+					parentRecords, _ = sourceConn.FetchRecords(parentEntity, "status", []interface{}{"ACTIVE", "ENABLED"}, cfg.Options.Limit)
 				}
 
 				if len(parentRecords) == 0 {
@@ -87,7 +87,7 @@ var runCmd = &cobra.Command{
 
 		// 2. Process Root Target Entity
 		fmt.Printf("[INFO] Extracting Root entity: %s\n", cfg.Root.Table)
-		rootRecords, err := sourceConn.FetchRecords(cfg.Root.Table, "id", []interface{}{"org_123"})
+		rootRecords, err := sourceConn.FetchRecords(cfg.Root.Table, "id", []interface{}{"org_123"}, cfg.Options.Limit)
 		if err != nil {
 			return fmt.Errorf("root fetch error: %w", err)
 		}
@@ -112,9 +112,15 @@ var runCmd = &cobra.Command{
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
-				childRecords, err := sourceConn.FetchRecords(entity, "tenant_id", []interface{}{"org_123"})
+				limit := cfg.Options.Limit
+				if limit <= 0 {
+					limit = 100 // Safe default safeguard for test datasets
+				}
+
+				// Inside downstream worker loop:
+				childRecords, err := sourceConn.FetchRecords(entity, "tenant_id", []interface{}{"org_123"}, limit)
 				if err != nil || len(childRecords) == 0 {
-					childRecords, _ = sourceConn.FetchRecords(entity, "user_id", []interface{}{"usr_1", "usr_2"})
+					childRecords, _ = sourceConn.FetchRecords(entity, "user_id", []interface{}{"usr_1", "usr_2"}, limit)
 				}
 
 				if len(childRecords) == 0 {

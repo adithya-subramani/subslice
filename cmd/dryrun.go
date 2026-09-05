@@ -44,7 +44,7 @@ var dryRunCmd = &cobra.Command{
 
 		// Preview Root Entity Records
 		fmt.Printf("\n--- [Preview] Root Entity: %s ---\n", cfg.Root.Table)
-		rootRecords, err := sourceConn.FetchRecords(cfg.Root.Table, "id", []interface{}{"org_123"})
+		rootRecords, err := sourceConn.FetchRecords(cfg.Root.Table, "id", []interface{}{"org_123"}, cfg.Options.Limit)
 		if err != nil {
 			return fmt.Errorf("root fetch error: %w", err)
 		}
@@ -57,9 +57,9 @@ var dryRunCmd = &cobra.Command{
 		// Preview Downstream Child Entities
 		for _, child := range plan.DownstreamEntities {
 			fmt.Printf("\n--- [Preview] Child Entity: %s ---\n", child)
-			childRecords, err := sourceConn.FetchRecords(child, "tenant_id", []interface{}{"org_123"})
+			childRecords, err := sourceConn.FetchRecords(child, "tenant_id", []interface{}{"org_123"}, cfg.Options.Limit)
 			if err != nil || len(childRecords) == 0 {
-				childRecords, _ = sourceConn.FetchRecords(child, "user_id", []interface{}{"usr_1", "usr_2"})
+				childRecords, _ = sourceConn.FetchRecords(child, "user_id", []interface{}{"usr_1", "usr_2"}, cfg.Options.Limit)
 			}
 
 			for _, record := range childRecords {
