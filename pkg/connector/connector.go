@@ -26,6 +26,8 @@ func NewConnector(driverType string, connStr string) (Connector, error) {
 	switch strings.ToLower(driverType) {
 	case "postgres", "postgresql", "cockroachdb", "cockroach":
 		return NewPostgresConnector(connStr)
+	case "mongo", "mongodb":
+		return NewMongoConnector(connStr)
 	default:
 		return nil, fmt.Errorf("unsupported storage driver: %s", driverType)
 	}

@@ -1,0 +1,23 @@
+source:
+  driver: "postgres" # or "file", or another mongo instance
+  url: "${STAGING_SNAPSHOT_URL}"
+target:
+  driver: "mongo"
+  url: "${MONGODB_TARGET_URL}"
+
+root:
+  table: "tenants" # maps to collection name in Mongo
+
+options:
+  workers: 8
+  batch_size: 1000
+  max_depth: 3
+  limit: 100
+
+transformations:
+  users:
+    - column: "email"
+      rule: "hash"
+      salt: "secret_salt"
+    - column: "ssn"
+      rule: "redact"
