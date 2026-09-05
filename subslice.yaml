@@ -1,7 +1,12 @@
 version: "1"
 
-source: "${STAGING_SNAPSHOT_URL}"
-target: "${DEV_TARGET_URL}"
+source:
+  driver: "postgres"
+  url: "${STAGING_SNAPSHOT_URL}"
+
+target:
+  driver: "postgres"
+  url: "${DEV_TARGET_URL}"
 
 options:
   max_depth: 5

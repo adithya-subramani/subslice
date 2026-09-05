@@ -9,12 +9,22 @@ import (
 
 type Config struct {
 	Version             string               `yaml:"version"`
-	Source              string               `yaml:"source"`
-	Target              string               `yaml:"target"`
+	Source              SourceConfig         `yaml:"source"`
+	Target              TargetConfig         `yaml:"target"`
 	Options             Options              `yaml:"options"`
 	Root                Root                 `yaml:"root"`
 	ImplicitForeignKeys []ImplicitForeignKey `yaml:"implicit_foreign_keys"`
 	Transformations     map[string][]Rule    `yaml:"transformations"`
+}
+
+type SourceConfig struct {
+	Driver string `yaml:"driver"`
+	URL    string `yaml:"url"`
+}
+
+type TargetConfig struct {
+	Driver string `yaml:"driver"`
+	URL    string `yaml:"url"`
 }
 
 type Options struct {
@@ -41,14 +51,12 @@ type Rule struct {
 	Salt   string `yaml:"salt,omitempty"`
 }
 
-// LoadConfig reads, expands env variables, and unmarshals the YAML file
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Expand environment variables like ${STAGING_SNAPSHOT_URL}
 	expanded := os.ExpandEnv(string(data))
 
 	var cfg Config
