@@ -1,0 +1,25 @@
+version: "1"
+
+source: "${STAGING_SNAPSHOT_URL}"
+target: "${DEV_TARGET_URL}"
+
+options:
+  max_depth: 5
+  batch_size: 1000
+  workers: 8
+
+root:
+  table: "tenants"
+  where: "id = '${TARGET_TENANT_ID}'"
+
+implicit_foreign_keys:
+  - table: "audit_logs"
+    column: "target_id"
+    foreign_table: "users"
+    foreign_column: "id"
+
+transformations:
+  users:
+    - column: "email"
+      rule: "hash"
+      salt: "secret_salt"
