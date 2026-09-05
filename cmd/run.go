@@ -6,6 +6,7 @@ import (
 	"subslice/pkg/connector"
 	"subslice/pkg/graph"
 	"subslice/pkg/transform"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,21 +29,18 @@ var runCmd = &cobra.Command{
 		fmt.Printf("[INFO] Run mode initialized using config: %s\n", cfgFile)
 		fmt.Printf("[INFO] Configured Workers: %d, Batch Size: %d\n", cfg.Options.Workers, cfg.Options.BatchSize)
 
-		// Connect to Source DB
 		sourceConn, err := connector.NewConnector(cfg.Source.Driver, cfg.Source.URL)
 		if err != nil {
 			return fmt.Errorf("source connection failed: %w", err)
 		}
 		defer sourceConn.Close()
 
-		// Connect to Target DB
 		targetConn, err := connector.NewConnector(cfg.Target.Driver, cfg.Target.URL)
 		if err != nil {
 			return fmt.Errorf("target connection failed: %w", err)
 		}
 		defer targetConn.Close()
 
-		// Discover Graph & Build Plan
 		storageGraph, err := sourceConn.DiscoverGraph()
 		if err != nil {
 			return fmt.Errorf("storage inspection failed: %w", err)
@@ -55,17 +53,19 @@ var runCmd = &cobra.Command{
 		}
 
 		transformer := transform.NewTransformer(cfg.Transformations)
-		totalReplicated := 0
+		var totalReplicated int64
+		limit := cfg.Options.Limit
+		if limit <= 0 {
+			limit = 100
+		}
 
-		// 1. Process Upstream Parent Entities First (Referential Integrity Prerequisites)
+		// 1. Process Upstream Parent Entities First
 		if len(plan.UpstreamEntities) > 0 {
 			fmt.Println("[INFO] Resolving and streaming Upstream Parent entities...")
 			for _, parentEntity := range plan.UpstreamEntities {
-				// Fetch parent records linked to root or global master data
-				parentRecords, err := sourceConn.FetchRecords(parentEntity, "id", []interface{}{"org_123", "global_master"}, cfg.Options.Limit)
+				parentRecords, err := sourceConn.FetchRecords(parentEntity, "id", []interface{}{"org_123", "global_master"}, limit)
 				if err != nil || len(parentRecords) == 0 {
-					// Fallback to fetch all or broad lookup criteria if needed
-					parentRecords, _ = sourceConn.FetchRecords(parentEntity, "status", []interface{}{"ACTIVE", "ENABLED"}, cfg.Options.Limit)
+					parentRecords, _ = sourceConn.FetchRecords(parentEntity, "status", []interface{}{"ACTIVE", "ENABLED"}, limit)
 				}
 
 				if len(parentRecords) == 0 {
@@ -81,13 +81,13 @@ var runCmd = &cobra.Command{
 				}
 
 				fmt.Printf("[OK]   %s (Upstream parent: %d records replicated)\n", parentEntity, len(parentRecords))
-				totalReplicated += len(parentRecords)
+				atomic.AddInt64(&totalReplicated, int64(len(parentRecords)))
 			}
 		}
 
 		// 2. Process Root Target Entity
 		fmt.Printf("[INFO] Extracting Root entity: %s\n", cfg.Root.Table)
-		rootRecords, err := sourceConn.FetchRecords(cfg.Root.Table, "id", []interface{}{"org_123"}, cfg.Options.Limit)
+		rootRecords, err := sourceConn.FetchRecords(cfg.Root.Table, "id", []interface{}{"org_123"}, limit)
 		if err != nil {
 			return fmt.Errorf("root fetch error: %w", err)
 		}
@@ -100,9 +100,9 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("root write error: %w", err)
 		}
 		fmt.Printf("[OK]   %s (%d records replicated)\n", cfg.Root.Table, len(rootRecords))
-		totalReplicated += len(rootRecords)
+		atomic.AddInt64(&totalReplicated, int64(len(rootRecords)))
 
-		// 3. Process Downstream Child Entities Concurrently using errgroup
+		// 3. Process Downstream Child Entities Concurrently
 		var g errgroup.Group
 		sem := make(chan struct{}, cfg.Options.Workers)
 
@@ -112,12 +112,6 @@ var runCmd = &cobra.Command{
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
-				limit := cfg.Options.Limit
-				if limit <= 0 {
-					limit = 100 // Safe default safeguard for test datasets
-				}
-
-				// Inside downstream worker loop:
 				childRecords, err := sourceConn.FetchRecords(entity, "tenant_id", []interface{}{"org_123"}, limit)
 				if err != nil || len(childRecords) == 0 {
 					childRecords, _ = sourceConn.FetchRecords(entity, "user_id", []interface{}{"usr_1", "usr_2"}, limit)
@@ -149,6 +143,7 @@ var runCmd = &cobra.Command{
 				}
 
 				fmt.Printf("[OK]   %s (%d records replicated concurrently with batching)\n", entity, len(childRecords))
+				atomic.AddInt64(&totalReplicated, int64(len(childRecords)))
 				return nil
 			})
 		}
@@ -160,7 +155,7 @@ var runCmd = &cobra.Command{
 		duration := time.Since(startTime).Seconds()
 		totalTables := 1 + len(plan.UpstreamEntities) + len(plan.DownstreamEntities)
 		fmt.Printf("[SUCCESS] Replicated %d rows across %d tables in %.2fs.\n",
-			totalReplicated, totalTables, duration)
+			atomic.LoadInt64(&totalReplicated), totalTables, duration)
 		return nil
 	},
 }
